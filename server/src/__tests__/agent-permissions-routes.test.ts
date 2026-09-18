@@ -955,7 +955,7 @@ describe.sequential("agent permission routes", () => {
       .send({ path: "/etc/passwd", adapterConfigKey: "instructionsFilePath" }));
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("Instance admin access required");
+    expect(res.body.error).toContain("managed (relative) instructions paths");
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
