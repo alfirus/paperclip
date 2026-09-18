@@ -4919,6 +4919,21 @@ export function agentRoutes(
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       throw forbidden("Agents can only manage their own instructions path");
     }
+
+    // Agents may only set instructions-path-related adapter config keys
+    if (req.actor.type === "agent") {
+      const requestedKey = asNonEmptyString(req.body.adapterConfigKey);
+      const defaultKey = resolveInstructionsPathKey(
+        (await svc.getById(id))?.adapterType ?? "",
+      );
+      const effectiveKey = requestedKey ?? defaultKey;
+      if (effectiveKey && !KNOWN_INSTRUCTIONS_PATH_KEYS.has(effectiveKey)) {
+        throw forbidden(
+          "Agents can only update instructions-path-related adapter configuration",
+        );
+      }
+    }
+
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 
