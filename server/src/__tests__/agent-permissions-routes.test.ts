@@ -941,7 +941,7 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   }, 15_000);
 
-  it("blocks agent-authenticated instructions-path updates", async () => {
+  it("blocks agent-authenticated instructions-path updates to external paths", async () => {
     const app = await createApp({
       type: "agent",
       agentId,
@@ -955,7 +955,55 @@ describe.sequential("agent permission routes", () => {
       .send({ path: "/etc/passwd" }));
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("instructions path or bundle configuration");
+    expect(res.body.error).toContain("Instance admin access required");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("allows agent to update its own instructions path with managed path", async () => {
+    mockAgentService.update.mockResolvedValue({
+      id: agentId,
+      adapterConfig: { instructionsFilePath: "instructions/ceo-delegation.md" },
+    });
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "instructions/ceo-delegation.md" }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalled();
+  });
+
+  it("blocks agent from updating another agent's instructions path", async () => {
+    const otherAgentId = "22222222-2222-4222-8222-222222222222";
+    mockAgentService.getById.mockResolvedValue({
+      id: otherAgentId,
+      adapterConfig: { instructionsFilePath: "instructions/old.md" },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${otherAgentId}/instructions-path`)
+      .send({ path: "instructions/new.md" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Agents can only manage their own instructions path");
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
