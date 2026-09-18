@@ -1218,6 +1218,7 @@ describe("agent permission routes", () => {
   });
 
   it("allows agent to update its own instructions path with managed path", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
     mockAgentService.update.mockResolvedValue({
       id: agentId,
       adapterConfig: { instructionsFilePath: "instructions/ceo-delegation.md" },
