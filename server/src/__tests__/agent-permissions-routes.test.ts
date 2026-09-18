@@ -1210,7 +1210,7 @@ describe("agent permission routes", () => {
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/instructions-path`)
-      .send({ path: "/etc/passwd" }));
+      .send({ path: "/etc/passwd", adapterConfigKey: "instructionsFilePath" }));
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Instance admin access required");
@@ -1235,7 +1235,7 @@ describe("agent permission routes", () => {
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/instructions-path`)
-      .send({ path: "instructions/ceo-delegation.md" }));
+      .send({ path: "instructions/ceo-delegation.md", adapterConfigKey: "instructionsFilePath" }));
 
     expect(res.status).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalled();
@@ -1259,7 +1259,7 @@ describe("agent permission routes", () => {
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${otherAgentId}/instructions-path`)
-      .send({ path: "instructions/new.md" }));
+      .send({ path: "instructions/new.md", adapterConfigKey: "instructionsFilePath" }));
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Agents can only manage their own instructions path");
