@@ -4944,8 +4944,10 @@ export function agentRoutes(
       }
       // Reject path traversal — resolved path must stay within the managed instructions directory
       if (req.body.path && typeof req.body.path === "string") {
-        const cwd = asNonEmptyString(existing.adapterConfig?.cwd ?? (asRecord(existing.adapterConfig) ?? {}).cwd);
-        if (cwd) {
+        const rawCwd = asNonEmptyString(existing.adapterConfig?.cwd ?? (asRecord(existing.adapterConfig) ?? {}).cwd);
+        if (rawCwd) {
+          // Canonicalize cwd: resolve to absolute, normalize, and strip trailing separator
+          const cwd = path.resolve(rawCwd);
           // Decode URI-encoded segments to catch encoded traversal (%2e%2e, etc.)
           let candidatePath: string;
           try {
@@ -4954,7 +4956,8 @@ export function agentRoutes(
             candidatePath = req.body.path;
           }
           const resolvedCandidate = path.resolve(cwd, candidatePath);
-          if (!resolvedCandidate.startsWith(cwd + path.sep) && resolvedCandidate !== cwd) {
+          // Check containment: resolved path must be exactly cwd or start with cwd/
+          if (resolvedCandidate !== cwd && !resolvedCandidate.startsWith(cwd + path.sep)) {
             throw forbidden(
               "Path traversal detected: resolved path escapes the managed instructions directory",
             );
