@@ -4942,6 +4942,25 @@ export function agentRoutes(
           "Agents can only set managed (relative) instructions paths",
         );
       }
+      // Reject path traversal — resolved path must stay within the managed instructions directory
+      if (req.body.path && typeof req.body.path === "string") {
+        const cwd = asNonEmptyString(existing.adapterConfig?.cwd ?? (asRecord(existing.adapterConfig) ?? {}).cwd);
+        if (cwd) {
+          // Decode URI-encoded segments to catch encoded traversal (%2e%2e, etc.)
+          let candidatePath: string;
+          try {
+            candidatePath = decodeURIComponent(req.body.path);
+          } catch {
+            candidatePath = req.body.path;
+          }
+          const resolvedCandidate = path.resolve(cwd, candidatePath);
+          if (!resolvedCandidate.startsWith(cwd + path.sep) && resolvedCandidate !== cwd) {
+            throw forbidden(
+              "Path traversal detected: resolved path escapes the managed instructions directory",
+            );
+          }
+        }
+      }
     }
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
