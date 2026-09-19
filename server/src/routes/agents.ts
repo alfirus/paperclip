@@ -4942,6 +4942,15 @@ export function agentRoutes(
           "Agents can only set managed (relative) instructions paths",
         );
       }
+      // Reject path traversal — normalize and reject if it escapes the managed root
+      if (req.body.path) {
+        const normalized = path.posix.normalize(req.body.path.replaceAll("\\", "/")).replace(/^\/+/, "");
+        if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+          throw forbidden(
+            "Agents can only set managed (relative) instructions paths within the bundle root",
+          );
+        }
+      }
     }
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
