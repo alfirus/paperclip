@@ -1030,6 +1030,78 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("blocks agent from using path traversal to escape managed root", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "../etc/passwd", adapterConfigKey: "instructionsFilePath" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("within the bundle root");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent from using double-dot traversal in middle of path", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "instructions/../../etc/passwd", adapterConfigKey: "instructionsFilePath" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("within the bundle root");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent from using encoded path traversal", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "instructions/%2e%2e/%2e%2e/etc/passwd", adapterConfigKey: "instructionsFilePath" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("within the bundle root");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent from using dot segment traversal", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "instructions/./../etc/passwd", adapterConfigKey: "instructionsFilePath" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("within the bundle root");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("blocks agent-authenticated hires that set instructions bundle config", async () => {
     mockAccessService.hasPermission.mockResolvedValue(true);
 
