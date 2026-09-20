@@ -28,8 +28,10 @@ import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CheckCircle2, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { AgentVisibilityRoster, filterIssuesByVisibilityFilter, getBlockedIssues, getCompletionRate } from "../components/AgentVisibilityRoster";
+import type { VisibilityTaskFilter } from "../components/AgentVisibilityRoster";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
@@ -211,6 +213,13 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const [taskFilter, setTaskFilter] = useState<VisibilityTaskFilter>("all");
+  const completion = useMemo(() => getCompletionRate(issues ?? []), [issues]);
+  const blockedIssues = useMemo(() => getBlockedIssues(issues ?? []).slice(0, 5), [issues]);
+  const filteredRecentIssues = useMemo(
+    () => filterIssuesByVisibilityFilter(recentIssues, taskFilter).slice(0, 10),
+    [recentIssues, taskFilter],
+  );
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -376,6 +385,37 @@ export function Dashboard() {
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
+      <AgentVisibilityRoster agents={agents ?? []} issues={issues ?? []} />
+
+      {blockedIssues.length > 0 && (
+        <section aria-label="Blocked issues" data-testid="dashboard-blocked-issues">
+          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+            Blocked Issues ({getBlockedIssues(issues ?? []).length})
+          </h3>
+          <Card className="block py-0 divide-y divide-border overflow-hidden border-destructive/50">
+            {blockedIssues.map((issue) => (
+              <Link
+                key={issue.id}
+                to={`/issues/${issue.identifier ?? issue.id}`}
+                className="dashboard-list-row text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block border-l-2 border-l-destructive"
+                data-testid={`dashboard-blocked-issue-${issue.id}`}
+              >
+                <div className="flex items-center gap-2 py-2 px-3">
+                  <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
+                  <span className="truncate flex-1">{issue.title}</span>
+                  {issue.assigneeAgentId && (() => {
+                    const name = agentName(issue.assigneeAgentId);
+                    return name
+                      ? <Identity name={name} size="sm" className="max-w-32" />
+                      : null;
+                  })()}
+                </div>
+              </Link>
+            ))}
+          </Card>
+        </section>
+      )}
+
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
@@ -397,7 +437,7 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-1 sm:gap-2">
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
@@ -433,6 +473,17 @@ export function Dashboard() {
                   {data.costs.monthBudgetCents > 0
                     ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                     : "Unlimited budget"}
+                </span>
+              }
+            />
+            <MetricCard
+              icon={CheckCircle2}
+              value={`${completion.rate}%`}
+              label="Completion Rate"
+              to="/issues?status=done"
+              description={
+                <span>
+                  {completion.done} of {completion.total} tasks done
                 </span>
               }
             />
@@ -504,16 +555,41 @@ export function Dashboard() {
 
             {/* Recent Tasks */}
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
-              </h3>
-              {recentIssues.length === 0 ? (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Recent Tasks
+                </h3>
+                <div className="flex flex-wrap gap-1" role="group" aria-label="Filter tasks by status">
+                  {(
+                    [
+                      ["all", "All"],
+                      ["open", "Open"],
+                      ["in_progress", "In Progress"],
+                      ["blocked", "Blocked"],
+                      ["done", "Done"],
+                    ] as [VisibilityTaskFilter, string][]
+                  ).map(([key, label]) => (
+                    <Button
+                      key={key}
+                      variant={taskFilter === key ? "secondary" : "ghost"}
+                      size="xs"
+                      onClick={() => setTaskFilter(key)}
+                      data-testid={`dashboard-task-filter-${key}`}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              {filteredRecentIssues.length === 0 ? (
                 <Card className="block p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                  <p className="text-sm text-muted-foreground">
+                    {recentIssues.length === 0 ? "No tasks yet." : "No tasks match this filter."}
+                  </p>
                 </Card>
               ) : (
                 <Card className="@container block py-0 divide-y divide-border overflow-hidden">
-                  {recentIssues.slice(0, 10).map((issue) => (
+                  {filteredRecentIssues.map((issue) => (
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
