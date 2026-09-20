@@ -80,17 +80,52 @@ elif [[ ! -t 0 ]]; then
   comment="$(cat)"
 fi
 
-require_command jq
+# JSON helper: prefer jq, fall back to python for environments (e.g. Windows
+# MSYS agent runtimes) where jq is not installed. Both paths must produce
+# identical payloads; verified via --dry-run.
+json_backend=""
+if command -v jq >/dev/null 2>&1; then
+  json_backend="jq"
+elif command -v python >/dev/null 2>&1; then
+  json_backend="python"
+else
+  printf 'Missing required command: jq or python (need one JSON helper)\n' >&2
+  exit 1
+fi
 
-payload="$(
-  jq -nc \
-    --arg status "$status" \
-    --arg comment "$comment" \
-    '
-      (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
-    '
-)"
+json_extract_status() {
+  if [[ "$json_backend" == "jq" ]]; then
+    jq -r '.status // empty' 2>/dev/null || true
+  else
+    python -c 'import json,sys
+try:
+  print(json.load(sys.stdin).get("status", ""))
+except Exception:
+  pass' 2>/dev/null || true
+  fi
+}
+
+if [[ "$json_backend" == "jq" ]]; then
+  payload="$(
+    jq -nc \
+      --arg status "$status" \
+      --arg comment "$comment" \
+      '
+        (if $status == "" then {} else {status: $status} end) +
+        (if $comment == "" then {} else {comment: $comment} end)
+      '
+  )"
+else
+  payload="$(
+    python -c 'import json,sys
+d = {}
+if sys.argv[1]:
+  d["status"] = sys.argv[1]
+if sys.argv[2]:
+  d["comment"] = sys.argv[2]
+print(json.dumps(d))' "$status" "$comment"
+  )"
+fi
 
 if [[ "$dry_run" == "1" ]]; then
   printf '%s\n' "$payload"
@@ -136,7 +171,7 @@ while :; do
       exit 1
     fi
     if [[ -n "$status" ]]; then
-      returned_status="$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)"
+      returned_status="$(json_extract_status <<<"$body")"
       if [[ "$returned_status" != "$status" ]]; then
         printf 'Issue update FAILED: server echoed status %s instead of requested %s.\n' "${returned_status:-<none>}" "$status" >&2
         printf '%s\n' "$body" >&2
