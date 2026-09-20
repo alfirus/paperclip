@@ -472,7 +472,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   useEffect(() => {
     if (!isMobile) return;
 
-    const EDGE_ZONE = 30; // px from left edge to start open-swipe
+    const EDGE_ZONE = 45; // px from left edge to start open-swipe (increased to avoid iOS back-swipe conflict)
     const MIN_DISTANCE = 50; // minimum horizontal swipe distance
     const MAX_VERTICAL = 75; // max vertical drift before we ignore
 
@@ -651,7 +651,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             )}
           >
             <div className="flex flex-1 min-h-0 overflow-hidden">
-              <div className="w-60 shrink-0 overflow-hidden">
+              <div className="w-[85vw] max-w-60 shrink-0 overflow-hidden">
                 {hasSecondarySidebar ? (
                   <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
                 ) : (
