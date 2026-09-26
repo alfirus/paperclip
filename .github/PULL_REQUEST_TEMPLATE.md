@@ -90,8 +90,22 @@
 
 -
 
+## ADR
+
+ADR: `<link to docs/adr/NNNN or 'n/a — not architecturally significant'>`
+
+<!--
+Replace the placeholder with the ADR this PR implements, e.g.:
+  ADR: docs/adr/0001-use-postgres-for-orders
+  ADR: n/a — not architecturally significant
+An architecturally significant change (technology stack, schema or data
+model, auth, third-party service, cross-service contract) needs its ADR
+merged before this PR — CONTRIBUTING rule (docs/adr/README.md).
+-->
+
 ## Checklist
 
+- [ ] Architecturally significant change? → ADR merged first (see CONTRIBUTING rule)
 - [ ] I have included a thinking path that traces from project context to this change
 - [ ] I have specified the model used (with version and capability details)
 - [ ] I have checked ROADMAP.md and confirmed this PR does not duplicate planned core work
