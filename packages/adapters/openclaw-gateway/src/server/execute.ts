@@ -1181,7 +1181,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let latestResultPayload: unknown = null;
   let retryCount = 0;
   let dispatchReported = false;
-  const MAX_RETRIES = 2;
+  const MAX_RETRIES = 4;
 
   const reportDispatch = () => {
     if (dispatchReported) return;
@@ -1371,14 +1371,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
 
         if (waitStatus === "error") {
+          const waitError = nonEmpty(waitPayload?.error) ?? lifecycleError ?? "OpenClaw gateway run failed";
+
+          // SESSION_WORK_START_CHANGED is transient: OpenClaw's session-restart-recovery
+          // briefly locks the session after a gateway restart. Retry instead of failing.
+          const isSessionWorkStartChanged =
+            waitError.includes("SESSION_WORK_START_CHANGED") ||
+            waitError.includes("changed while starting work");
+
+          if (isSessionWorkStartChanged && !dispatchReported && retryCount < MAX_RETRIES) {
+            retryCount++;
+            const backoffMs = retryCount * 5000;  // 5s, 10s — session recovery needs time
+            await ctx.onLog(
+              "stdout",
+              `[openclaw-gateway] SESSION_WORK_START_CHANGED, retry ${retryCount}/${MAX_RETRIES} after ${backoffMs}ms\n`,
+            );
+            await new Promise((r) => setTimeout(r, backoffMs));
+            continue;
+          }
+
           return {
             exitCode: 1,
             signal: null,
             timedOut: false,
-            errorMessage:
-              nonEmpty(waitPayload?.error) ??
-              lifecycleError ??
-              "OpenClaw gateway run failed",
+            errorMessage: waitError,
             errorCode: "openclaw_gateway_wait_error",
             resultJson: waitPayload,
           };
