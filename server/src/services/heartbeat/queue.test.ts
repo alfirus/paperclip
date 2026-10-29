@@ -496,4 +496,46 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const rows = await db.select().from(agentWakeupRequests);
     expect(rows.every(row => row.status === "queued")).toBe(true);
   });
+
+  it("counts only successful updates when one row's cancellation fails", async () => {
+    const [company] = await db.insert(companies).values({ name: "Orphan partial", issuePrefix: "OP" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Partial agent", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const stale = new Date(Date.now() - 10 * 60 * 1000);
+    const failing = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "failing-source", status: "queued", requestedAt: stale }).returning().then(rows => rows[0]);
+    const succeeding = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "scheduler", status: "queued", requestedAt: stale }).returning().then(rows => rows[0]);
+    await db.execute(sql`alter table agent_wakeup_requests add constraint orphan_sweep_partial_failure_test check (source <> 'failing-source' or reason is distinct from 'orphaned_wakeup_no_run')`);
+    try {
+      vi.mocked(logger.warn).mockClear();
+      await expect(createHeartbeatQueue(db, callbacks(db)).sweepOrphanedWakeupRequests()).resolves.toEqual({ cancelled: 1 });
+      const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, company.id));
+      const byId = new Map(rows.map(row => [row.id, row] as const));
+      expect(byId.get(failing.id)).toMatchObject({ status: "queued", runId: null, finishedAt: null });
+      expect(byId.get(succeeding.id)).toMatchObject({ status: "skipped", reason: "orphaned_wakeup_no_run" });
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        expect.objectContaining({ wakeupId: failing.id }),
+        expect.stringContaining("failed to cancel orphaned wakeup"),
+      );
+    } finally {
+      await db.execute(sql`alter table agent_wakeup_requests drop constraint orphan_sweep_partial_failure_test`);
+    }
+  });
+
+  it("never double-counts when two sweeps race over the same orphans", async () => {
+    const [company] = await db.insert(companies).values({ name: "Orphan race", issuePrefix: "OR" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Race agent", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const stale = new Date(Date.now() - 10 * 60 * 1000);
+    for (let index = 0; index < 2; index++) {
+      await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "scheduler", status: "queued", requestedAt: stale });
+    }
+    const [first, second] = await Promise.all([
+      createHeartbeatQueue(db, callbacks(db)).sweepOrphanedWakeupRequests(),
+      createHeartbeatQueue(db, callbacks(db)).sweepOrphanedWakeupRequests(),
+    ]);
+    expect(first.cancelled + second.cancelled).toBe(2);
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, company.id));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).toMatchObject({ status: "skipped", reason: "orphaned_wakeup_no_run", runId: null });
+    }
+  });
 });

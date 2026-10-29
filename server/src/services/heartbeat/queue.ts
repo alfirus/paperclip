@@ -2258,6 +2258,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ),
         ),
       )
+      .orderBy(asc(agentWakeupRequests.id))
       .limit(100);
 
     if (orphaned.length === 0) return { cancelled: 0 };
