@@ -1322,6 +1322,10 @@ export function heartbeatService(
     return heartbeatQueue.dispatchPendingNativeStatusWakeups(...args);
   }
 
+  function sweepOrphanedWakeupRequests(...args: Parameters<typeof heartbeatQueue.sweepOrphanedWakeupRequests>) {
+    return heartbeatQueue.sweepOrphanedWakeupRequests(...args);
+  }
+
   function resumeQueuedRunsAfterDrain() {
     const promise = heartbeatQueue.resumeQueuedRunsAfterDrain();
     activeWakeupPromises.add(promise);
@@ -4089,6 +4093,7 @@ export function heartbeatService(
 
     wakeup: trackWakeup,
     dispatchPendingNativeStatusWakeups,
+    sweepOrphanedWakeupRequests,
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,

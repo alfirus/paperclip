@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../../middleware/logger.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
@@ -12,6 +13,10 @@ import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks as runControlCallbacks } from "./__tests__/run-control-fixtures.js";
 
 import { createHeartbeatQueueTestDependencies as callbacks } from "../../__tests__/helpers/heartbeat-queue.js";
+
+vi.mock("../../middleware/logger.js", () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
 
 function guardedDatabase() {
   const access = vi.fn(() => { throw new Error("Unexpected queue database access"); });
@@ -62,6 +67,21 @@ describe("heartbeat queue module boundary", () => {
     await Promise.resolve();
     expect(deps.activeWakeupPromises.size).toBe(0);
     expect(deps.activeRunExecutionPromises.size).toBe(0);
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
+  it("logs enqueueWakeup failures from trackWakeup for scheduler observability", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    deps.getAgent.mockRejectedValue(new Error("wake insert failed"));
+    vi.mocked(logger.error).mockClear();
+    const tracked = createHeartbeatQueue(database.db, deps).trackWakeup("agent-1", { source: "timer", reason: "recovery" });
+    await expect(tracked).rejects.toThrow("wake insert failed");
+    await Promise.resolve();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-1", source: "timer", reason: "recovery" }),
+      expect.stringContaining("trackWakeup"),
+    );
     expect(database.access).not.toHaveBeenCalled();
   });
 
@@ -431,5 +451,49 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(cancelled, { suppressImmediateRecovery: true });
     expect(deps.treeControlSvc.getActivePauseHoldGate).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  async function orphanSweepFixture() {
+    const [company] = await db.insert(companies).values({ name: "Orphan sweep", issuePrefix: "OS" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Sweep agent", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const stale = new Date(Date.now() - 10 * 60 * 1000);
+    const insertWake = (values: Partial<typeof agentWakeupRequests.$inferInsert>) =>
+      db.insert(agentWakeupRequests).values({
+        companyId: company.id, agentId: agent.id, source: "scheduler", status: "queued", requestedAt: stale, ...values,
+      }).returning().then(rows => rows[0]);
+    const orphan = await insertWake({ reason: "recovery" });
+    const fresh = await insertWake({ reason: "fresh", requestedAt: new Date() });
+    const nativeIntent = await insertWake({ reason: "native_wake", requestedByActorType: "system", requestedByActorId: "native-status-committer" });
+    const nativeReceipt = await insertWake({ reason: "native_wake", requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${nativeIntent.id}` });
+    return { agent, orphan, fresh, nativeIntent, nativeReceipt };
+  }
+
+  it("cancels stale orphaned wakeups while sparing fresh and native-status rows", async () => {
+    const seeded = await orphanSweepFixture();
+    vi.mocked(logger.warn).mockClear();
+    await expect(createHeartbeatQueue(db, callbacks(db)).sweepOrphanedWakeupRequests()).resolves.toEqual({ cancelled: 1 });
+    const rows = await db.select().from(agentWakeupRequests);
+    const byId = new Map(rows.map(row => [row.id, row]));
+    expect(byId.get(seeded.orphan.id)).toMatchObject({ status: "skipped", reason: "orphaned_wakeup_no_run", runId: null });
+    expect(byId.get(seeded.orphan.id)!.finishedAt).not.toBeNull();
+    expect((byId.get(seeded.orphan.id)!.payload as Record<string, any> | null)?.orphanedRecovery).toMatchObject({
+      originalReason: "recovery",
+      originalSource: "scheduler",
+    });
+    for (const spared of [seeded.fresh, seeded.nativeIntent, seeded.nativeReceipt]) {
+      expect(byId.get(spared.id)).toMatchObject({ status: "queued", runId: null, finishedAt: null });
+    }
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      expect.objectContaining({ cancelled: 1 }),
+      expect.stringContaining("orphaned wakeup"),
+    );
+  });
+
+  it("reports zero cancelled when no orphaned wakeups qualify", async () => {
+    const seeded = await orphanSweepFixture();
+    await db.update(agentWakeupRequests).set({ requestedAt: new Date() }).where(eq(agentWakeupRequests.id, seeded.orphan.id));
+    await expect(createHeartbeatQueue(db, callbacks(db)).sweepOrphanedWakeupRequests()).resolves.toEqual({ cancelled: 0 });
+    const rows = await db.select().from(agentWakeupRequests);
+    expect(rows.every(row => row.status === "queued")).toBe(true);
   });
 });
