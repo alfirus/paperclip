@@ -110,7 +110,7 @@ import { inheritNativeRunnerAdapterConfig } from "../services/native-runtime/nat
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { authorizeInstructionRead } from "../services/agent-instruction-authorization.js";
-import { instructionPath } from "../services/agent-instruction-files.js";
+import { assertInstructionPathSafe, instructionPath } from "../services/agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState } from "../services/agent-instructions.js";
 import {
   agentService,
@@ -5099,6 +5099,37 @@ export function agentRoutes(
         // link. Reject symlinks in the managed root and in the resolved
         // components, then verify the real target stays inside the real root.
         await assertAgentInstructionsPathHasNoSymlinkEscape(cwd, resolvedCandidate);
+        // Defense in depth against TOCTOU (symlink planted between PATCH and
+        // next read): instruction consumption re-validates with no-follow /
+        // realpath on every read via assertInstructionPathSafe +
+        // readInstructionBytes (O_NOFOLLOW) in
+        // server/src/services/agent-instruction-files.ts, enforced by
+        // getBundle/getBundleLocation/readFile in agent-instructions.ts. A
+        // link planted after this PATCH is rejected at the next read. Run the
+        // same consumption-time validator here so persist-time and use-time
+        // share one no-follow implementation (map 422 → 403 to preserve the
+        // agent self-service contract).
+        try {
+          await assertInstructionPathSafe(cwd, resolvedCandidate.slice(cwd.length + 1).split(path.sep).join("/") || ".");
+        } catch (error) {
+          // assertInstructionPathSafe allows non-existent tails but rejects
+          // symlink components and non-file finals. The directory itself
+          // (candidate === cwd) and existing directory tails are not symlink
+          // escapes — the first-layer walk above already cleared symlinks —
+          // so only non-directory failures become 403s.
+          if (resolvedCandidate === cwd) {
+            void error;
+          } else {
+            const tailStat = await lstat(resolvedCandidate).catch(() => null);
+            if (tailStat?.isDirectory() && !tailStat.isSymbolicLink()) {
+              void error;
+            } else {
+              throw forbidden(
+                "Path traversal detected: instructions path must not traverse a symlink outside the managed instructions directory",
+              );
+            }
+          }
+        }
       }
     }
 
