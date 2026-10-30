@@ -364,9 +364,6 @@ describe("agent permission routes", () => {
     mockEnvironmentService.getById.mockReset();
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
-    // Default the managed-root mock to the real implementation so route
-    // validation exercises the production root derivation; individual tests
-    // override it with temp dirs for hermetic symlink coverage.
     const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
       "../services/agent-instructions.js",
     );
@@ -1243,8 +1240,6 @@ describe("agent permission routes", () => {
       id: agentId,
       adapterConfig: { instructionsFilePath: "instructions/ceo-delegation.md" },
     });
-    // Exercise the real bundle sync: the persisted managed absolute path must
-    // stay classified as managed so the post-sync admin gate passes.
     const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
       "../services/agent-instructions.js",
     );
@@ -1362,9 +1357,6 @@ describe("agent permission routes", () => {
   });
 
   it("treats percent-encoded sequences as literal filenames", async () => {
-    // Nothing downstream URI-decodes the persisted path, so validation must
-    // use the same literal representation: "%2e%2e" is a harmless filename,
-    // not traversal.
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
     mockResolveManagedInstructionsRoot.mockReturnValue("/tmp/instructions");
     mockAgentService.getById.mockResolvedValue({
@@ -1395,9 +1387,6 @@ describe("agent permission routes", () => {
   });
 
   it("allows agent instructions-path update when workspace cwd differs from the managed root", async () => {
-    // The managed root is derived from company/agent ids, not adapterConfig.cwd
-    // (the agent's workspace). A workspace outside the managed directory must
-    // not turn a valid relative path into an external bundle.
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
@@ -1495,7 +1484,6 @@ describe("agent permission routes", () => {
     const outside = await mkdtemp(path.join(tmpdir(), "paperclip-outside-"));
     try {
       await writeFile(path.join(outside, "secret.md"), "top secret", "utf8");
-      // "junction" needs no privilege on Windows and is a plain dir symlink elsewhere.
       await symlink(outside, path.join(root, "link"), "junction");
       mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
       mockResolveManagedInstructionsRoot.mockReturnValue(root);
@@ -1530,7 +1518,6 @@ describe("agent permission routes", () => {
     const target = await mkdtemp(path.join(tmpdir(), "paperclip-target-"));
     const linkPath = `${target}-link`;
     try {
-      // "junction" needs no privilege on Windows and is a plain dir symlink elsewhere.
       await symlink(target, linkPath, "junction");
       mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
       mockResolveManagedInstructionsRoot.mockReturnValue(linkPath);
@@ -1571,8 +1558,6 @@ describe("agent permission routes", () => {
       id: agentId,
       adapterConfig: { instructionsFilePath: "subdir/instructions.md" },
     });
-    // Real sync proves the managed-root-relative path is not misclassified as
-    // external (the workspace/managed-root mismatch this PR fixes).
     const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
       "../services/agent-instructions.js",
     );
