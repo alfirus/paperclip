@@ -117,6 +117,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
+const mockResolveManagedInstructionsRoot = vi.hoisted(() => vi.fn());
 const mockEnsureOpenCodeModelConfiguredAndAvailable = vi.hoisted(() => vi.fn());
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -197,13 +198,15 @@ function registerModuleMocks() {
     environmentService: () => mockEnvironmentService,
   }));
 
-  vi.doMock("../services/agent-instructions.js", () => ({
+  vi.doMock("../services/agent-instructions.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/agent-instructions.js")>()),
     agentInstructionsService: () => mockAgentInstructionsService,
     agentInstructionsBundleMode: (agent: { adapterConfig?: unknown }) => {
       const config = agent.adapterConfig as Record<string, unknown> | undefined;
       return config?.instructionsBundleMode === "external" ? "external" : "managed";
     },
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
+    resolveManagedInstructionsRoot: mockResolveManagedInstructionsRoot,
   }));
 
   vi.doMock("../services/workspace-operations.js", () => ({
@@ -308,7 +311,7 @@ describe("agent permission routes", () => {
     return app;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetAllMocks();
     mockAgentService.getById.mockReset();
     mockAgentService.getConfigRevision.mockReset();
@@ -352,6 +355,7 @@ describe("agent permission routes", () => {
     mockTrackAgentCreated.mockReset();
     mockGetTelemetryClient.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockReset();
+    mockResolveManagedInstructionsRoot.mockReset();
     mockInstanceSettingsService.get.mockReset().mockResolvedValue({ defaultEnvironmentId: null, experimental: {}, general: {} });
     mockInstanceSettingsService.getExperimental.mockReset().mockResolvedValue({});
     mockInstanceSettingsService.getGeneral.mockReset();
@@ -360,6 +364,15 @@ describe("agent permission routes", () => {
     mockEnvironmentService.getById.mockReset();
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
+    // Default the managed-root mock to the real implementation so route
+    // validation exercises the production root derivation; individual tests
+    // override it with temp dirs for hermetic symlink coverage.
+    const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
+      "../services/agent-instructions.js",
+    );
+    mockResolveManagedInstructionsRoot.mockImplementation(
+      realAgentInstructions.resolveManagedInstructionsRoot,
+    );
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.getConfigRevision.mockResolvedValue(null);
@@ -1224,13 +1237,20 @@ describe("agent permission routes", () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
-      adapterConfig: { cwd: "/tmp/instructions" },
+      adapterConfig: {},
     });
     mockAgentService.update.mockResolvedValue({
       id: agentId,
       adapterConfig: { instructionsFilePath: "instructions/ceo-delegation.md" },
     });
-    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
+    // Exercise the real bundle sync: the persisted managed absolute path must
+    // stay classified as managed so the post-sync admin gate passes.
+    const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
+      "../services/agent-instructions.js",
+    );
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation(
+      realAgentInstructions.syncInstructionsBundleConfigFromFilePath,
+    );
 
     const app = await createApp({
       type: "agent",
@@ -1293,9 +1313,10 @@ describe("agent permission routes", () => {
 
   it("blocks path traversal via ../ prefix", async () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
+    mockResolveManagedInstructionsRoot.mockReturnValue("/tmp/instructions");
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
-      adapterConfig: { cwd: "/tmp/instructions" },
+      adapterConfig: {},
     });
 
     const app = await createApp({
@@ -1317,9 +1338,10 @@ describe("agent permission routes", () => {
 
   it("blocks path traversal via nested ../ segments", async () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
+    mockResolveManagedInstructionsRoot.mockReturnValue("/tmp/instructions");
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
-      adapterConfig: { cwd: "/tmp/instructions" },
+      adapterConfig: {},
     });
 
     const app = await createApp({
@@ -1344,9 +1366,10 @@ describe("agent permission routes", () => {
     // use the same literal representation: "%2e%2e" is a harmless filename,
     // not traversal.
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
+    mockResolveManagedInstructionsRoot.mockReturnValue("/tmp/instructions");
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
-      adapterConfig: { cwd: "/tmp/instructions" },
+      adapterConfig: {},
     });
     mockAgentService.update.mockResolvedValue({
       id: agentId,
@@ -1371,13 +1394,59 @@ describe("agent permission routes", () => {
     expect(mockLogActivity).toHaveBeenCalled();
   });
 
-  it("rejects agent instructions-path update when managed cwd is missing", async () => {
-    // Fail closed: with no managed root there is nothing to contain the path against.
+  it("allows agent instructions-path update when workspace cwd differs from the managed root", async () => {
+    // The managed root is derived from company/agent ids, not adapterConfig.cwd
+    // (the agent's workspace). A workspace outside the managed directory must
+    // not turn a valid relative path into an external bundle.
+    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: { cwd: "/tmp/agent-workspace" },
+    });
+    mockAgentService.update.mockResolvedValue({
+      id: agentId,
+      adapterConfig: { instructionsFilePath: "subdir/instructions.md" },
+    });
+    const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
+      "../services/agent-instructions.js",
+    );
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation(
+      realAgentInstructions.syncInstructionsBundleConfigFromFilePath,
+    );
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "subdir/instructions.md", adapterConfigKey: "instructionsFilePath" }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalled();
+  });
+
+  it("allows agent instructions-path update with no workspace cwd configured", async () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       adapterConfig: {},
     });
+    mockAgentService.update.mockResolvedValue({
+      id: agentId,
+      adapterConfig: { instructionsFilePath: "subdir/instructions.md" },
+    });
+    const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
+      "../services/agent-instructions.js",
+    );
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation(
+      realAgentInstructions.syncInstructionsBundleConfigFromFilePath,
+    );
 
     const app = await createApp({
       type: "agent",
@@ -1389,42 +1458,19 @@ describe("agent permission routes", () => {
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/instructions-path`)
-      .send({ path: "instructions/new.md", adapterConfigKey: "instructionsFilePath" }));
+      .send({ path: "subdir/instructions.md", adapterConfigKey: "instructionsFilePath" }));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("managed working directory");
-    expect(mockLogActivity).not.toHaveBeenCalled();
-  });
-
-  it("rejects agent instructions-path update when managed cwd is not absolute", async () => {
-    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterConfig: { cwd: "relative/path" },
-    });
-
-    const app = await createApp({
-      type: "agent",
-      agentId,
-      companyId,
-      source: "agent_key",
-      runId: "run-1",
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}/instructions-path`)
-      .send({ path: "instructions/new.md", adapterConfigKey: "instructionsFilePath" }));
-
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("managed working directory");
-    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalled();
   });
 
   it("rejects Windows-style absolute instructions paths", async () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
+    mockResolveManagedInstructionsRoot.mockReturnValue("/tmp/instructions");
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
-      adapterConfig: { cwd: "/tmp/instructions" },
+      adapterConfig: {},
     });
 
     const app = await createApp({
@@ -1452,9 +1498,10 @@ describe("agent permission routes", () => {
       // "junction" needs no privilege on Windows and is a plain dir symlink elsewhere.
       await symlink(outside, path.join(root, "link"), "junction");
       mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
+      mockResolveManagedInstructionsRoot.mockReturnValue(root);
       mockAgentService.getById.mockResolvedValue({
         ...baseAgent,
-        adapterConfig: { cwd: root },
+        adapterConfig: {},
       });
 
       const app = await createApp({
@@ -1486,9 +1533,10 @@ describe("agent permission routes", () => {
       // "junction" needs no privilege on Windows and is a plain dir symlink elsewhere.
       await symlink(target, linkPath, "junction");
       mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
+      mockResolveManagedInstructionsRoot.mockReturnValue(linkPath);
       mockAgentService.getById.mockResolvedValue({
         ...baseAgent,
-        adapterConfig: { cwd: linkPath },
+        adapterConfig: {},
       });
 
       const app = await createApp({
@@ -1517,13 +1565,20 @@ describe("agent permission routes", () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow" });
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
-      adapterConfig: { cwd: "/tmp/instructions" },
+      adapterConfig: {},
     });
     mockAgentService.update.mockResolvedValue({
       id: agentId,
       adapterConfig: { instructionsFilePath: "subdir/instructions.md" },
     });
-    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
+    // Real sync proves the managed-root-relative path is not misclassified as
+    // external (the workspace/managed-root mismatch this PR fixes).
+    const realAgentInstructions = await vi.importActual<typeof import("../services/agent-instructions.js")>(
+      "../services/agent-instructions.js",
+    );
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation(
+      realAgentInstructions.syncInstructionsBundleConfigFromFilePath,
+    );
 
     const app = await createApp({
       type: "agent",
